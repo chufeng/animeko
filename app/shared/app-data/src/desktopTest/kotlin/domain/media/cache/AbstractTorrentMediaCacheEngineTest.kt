@@ -18,19 +18,25 @@ import me.him188.ani.app.domain.media.cache.engine.AlwaysUseTorrentEngineAccess
 import me.him188.ani.app.domain.media.cache.engine.MediaCacheEngineKey
 import me.him188.ani.app.domain.media.cache.engine.TorrentMediaCacheEngine
 import me.him188.ani.app.domain.media.cache.storage.MediaSaveDirProvider
+import me.him188.ani.app.domain.media.cache.storage.ReadableMediaCacheNaming
 import me.him188.ani.app.domain.media.createTestDefaultMedia
 import me.him188.ani.app.domain.media.createTestMediaProperties
+import me.him188.ani.app.domain.media.resolver.EpisodeMetadata
 import me.him188.ani.app.domain.torrent.TorrentEngine
 import me.him188.ani.app.domain.torrent.engines.AnitorrentEngine
 import me.him188.ani.app.domain.torrent.peer.PeerFilterSettings
 import me.him188.ani.app.torrent.anitorrent.session.AnitorrentDownloadSession
 import me.him188.ani.app.torrent.anitorrent.test.TestAnitorrentTorrentDownloader
+import me.him188.ani.app.torrent.api.files.EncodedTorrentInfo
 import me.him188.ani.datasources.api.EpisodeSort
+import me.him188.ani.datasources.api.Media
+import me.him188.ani.datasources.api.MediaCacheMetadata
 import me.him188.ani.datasources.api.source.MediaSourceKind
 import me.him188.ani.datasources.api.source.MediaSourceLocation
 import me.him188.ani.datasources.api.topic.EpisodeRange
 import me.him188.ani.datasources.api.topic.FileSize.Companion.megaBytes
 import me.him188.ani.datasources.api.topic.ResourceLocation
+import me.him188.ani.utils.httpdownloader.MediaType
 import me.him188.ani.utils.io.inSystem
 import me.him188.ani.utils.io.toKtPath
 import me.him188.ani.utils.ktor.asScopedHttpClient
@@ -87,6 +93,9 @@ abstract class AbstractTorrentMediaCacheEngineTest {
 
     protected fun TestScope.createEngine(
         engine: TorrentEngine = createTestAnitorrentEngine(coroutineContext),
+        saveDirProvider: MediaSaveDirProvider = object : MediaSaveDirProvider {
+            override val saveDir: String = dir.absolutePath
+        },
         onDownloadStarted: suspend (session: AnitorrentDownloadSession) -> Unit = {},
     ): TorrentMediaCacheEngine {
         this.coroutineContext.job.invokeOnCompletion {
@@ -99,10 +108,44 @@ abstract class AbstractTorrentMediaCacheEngineTest {
             engineAccess = AlwaysUseTorrentEngineAccess,
             dao = torrentInfoDatabase,
             flowDispatcher = coroutineContext[ContinuationInterceptor]!!,
-            baseSaveDirProvider = object : MediaSaveDirProvider {
-                override val saveDir: String = dir.absolutePath
-            },
+            baseSaveDirProvider = saveDirProvider,
             onDownloadStarted = { onDownloadStarted(it as AnitorrentDownloadSession) },
         ).also { cacheEngine = it }
+    }
+
+    protected fun tempFile(vararg parts: String): File {
+        return parts.fold(dir) { current, part -> File(current, part) }
+    }
+
+    protected fun createReadableSaveDirProvider(): MediaSaveDirProvider {
+        return object : MediaSaveDirProvider {
+            override val saveDir: String = dir.absolutePath
+
+            override fun getHttpCacheSavePaths(
+                origin: Media,
+                metadata: MediaCacheMetadata,
+                episodeMetadata: EpisodeMetadata,
+                mediaType: MediaType,
+            ) = ReadableMediaCacheNaming.buildHttpSavePaths(origin, metadata, episodeMetadata, mediaType)
+
+            override fun getTorrentRelativeSaveDir(
+                origin: Media,
+                metadata: MediaCacheMetadata,
+                episodeMetadata: EpisodeMetadata,
+                encodedTorrentInfo: EncodedTorrentInfo,
+            ) = ReadableMediaCacheNaming.buildTorrentRelativeSaveDir(origin, metadata, episodeMetadata)
+
+            override fun getTorrentCompletedFileName(
+                origin: Media,
+                metadata: MediaCacheMetadata,
+                episodeMetadata: EpisodeMetadata,
+                originalFileName: String,
+            ) = ReadableMediaCacheNaming.buildReadableCompletedFileName(
+                origin,
+                metadata,
+                episodeMetadata,
+                originalFileName,
+            )
+        }
     }
 }

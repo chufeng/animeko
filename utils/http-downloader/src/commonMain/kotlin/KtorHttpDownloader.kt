@@ -125,27 +125,12 @@ open class KtorHttpDownloader(
         return downloadWithId(downloadId, url, options)?.downloadId ?: downloadId
     }
 
-    protected fun getMediaTypeFromUrl(url: String): MediaType? {
-        val parsed = io.ktor.http.Url(url)
-        val path = parsed.encodedPath // without query
-        fun guessFromValue(value: String): MediaType? {
-            return when {
-                value.endsWith(".m3u8", ignoreCase = true) -> MediaType.M3U8
-                value.endsWith(".mp4", ignoreCase = true) -> MediaType.MP4
-                value.endsWith(".mkv", ignoreCase = true) -> MediaType.MKV
-                else -> null
-            }
-        }
-        return guessFromValue(path) // https://foo.com/bar.m3u8
-            ?: guessFromValue(url) // https://foo.com/index.php?key=video.m3u8
-    }
-
     override suspend fun downloadWithId(
         downloadId: DownloadId,
         url: String,
         options: DownloadOptions,
     ): DownloadState? {
-        val mediaType = getMediaTypeFromUrl(url) ?: MediaType.MP4
+        val mediaType = guessMediaTypeFromUrl(url) ?: MediaType.MP4
         logger.info { "Preparing to download with id=$downloadId, url=$url, mediaType=$mediaType" }
 
         // 1) Set initial state if not present
@@ -157,12 +142,13 @@ open class KtorHttpDownloader(
                 logger.info { "Existing completed download found for $downloadId, ignoring." }
                 return existingEntry.state
             }
-            val segmentCacheDir = ("segments_" + downloadId.value)
-                .also { fileSystem.createDirectories(baseSaveDir.resolve(it)) }
+            val outputPath = options.relativeOutputPath ?: downloadId.value
+            val segmentCacheDir = options.relativeSegmentCacheDir ?: ("segments_" + downloadId.value)
+            fileSystem.createDirectories(baseSaveDir.resolve(segmentCacheDir))
             val initialState = DownloadState(
                 downloadId = downloadId,
                 url = url,
-                relativeOutputPath = downloadId.value,
+                relativeOutputPath = outputPath,
                 segments = emptyList(),
                 totalSegments = 0,
                 downloadedBytes = 0L,
@@ -809,6 +795,7 @@ open class KtorHttpDownloader(
         val st = getState(downloadId) ?: return@withContext
         val cacheDir = baseSaveDir.resolve(st.relativeSegmentCacheDir)
         val finalOutput = baseSaveDir.resolve(st.relativeOutputPath)
+        finalOutput.parent?.let { fileSystem.createDirectories(it) }
 
         fileSystem.sink(finalOutput).buffered().use { out ->
             st.segments.sortedBy { it.index }.forEach { seg ->

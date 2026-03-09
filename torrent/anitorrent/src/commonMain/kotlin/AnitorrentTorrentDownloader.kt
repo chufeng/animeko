@@ -273,14 +273,24 @@ abstract class AnitorrentTorrentDownloader<THandle : TorrentHandle, TAddInfo : T
     override suspend fun startDownload(
         data: EncodedTorrentInfo,
         parentCoroutineContext: CoroutineContext,
+    ): TorrentSession = startDownload(
+        data = data,
+        saveDir = getSaveDirForTorrent(data),
+        parentCoroutineContext = parentCoroutineContext,
+    )
+
+    override suspend fun startDownload(
+        data: EncodedTorrentInfo,
+        saveDir: SystemPath,
+        parentCoroutineContext: CoroutineContext,
     ): TorrentSession = withHandleTaskQueue {
         // 这个函数的 native 部分跑得也都很快, 整个函数十几毫秒就可以跑完, 所以 lock 也不会影响性能 (刚启动时需要尽快恢复 resume)
 
         val info = AnitorrentAddTorrentInfo.decodeFrom(data)
-        val saveDir = getSaveDirForTorrent(data)
         val fastResumeFile = saveDir.resolve(FAST_RESUME_FILENAME)
+        val sessionKey = buildSessionKey(data, saveDir)
 
-        openSessions.value[data.data.contentHashCode().toString()]?.let {
+        openSessions.value[sessionKey]?.let {
             logger.info { "Found existing session" }
             return@withHandleTaskQueue it
         }
@@ -318,7 +328,7 @@ abstract class AnitorrentTorrentDownloader<THandle : TorrentHandle, TAddInfo : T
             saveDir,
             fastResumeFile = fastResumeFile,
             onClose = { native.releaseHandle(handle) },
-            onPostClose = { openSessions.value -= data.data.contentHashCode().toString() },
+            onPostClose = { openSessions.value -= sessionKey },
             onDelete = {
                 scope.launch {
                     // http 下载的 .torrent 文件保存在全局路径, 需要删除
@@ -334,7 +344,7 @@ abstract class AnitorrentTorrentDownloader<THandle : TorrentHandle, TAddInfo : T
             },
             parentCoroutineContext = parentCoroutineContext,
         ).also {
-            openSessions.value += data.data.contentHashCode().toString() to it // 放进去之后才能处理 alert
+            openSessions.value += sessionKey to it // 放进去之后才能处理 alert
             val trackers = trackers.split(", ")
             logger.info { "[${it.handleId}] AnitorrentDownloadSession created, adding ${trackers.size} trackers" }
             for (tracker in trackers) {
@@ -356,7 +366,14 @@ abstract class AnitorrentTorrentDownloader<THandle : TorrentHandle, TAddInfo : T
      *  @see TorrentMediaCacheEngine.modifyMediaCacheDirectory
      */
     override fun getSaveDirForTorrent(data: EncodedTorrentInfo): SystemPath =
-        downloadCacheDir.resolve(data.data.contentHashCode().toString())
+        getSaveDirForTorrent(data, null)
+
+    override fun getSaveDirForTorrent(data: EncodedTorrentInfo, relativeSaveDir: String?): SystemPath =
+        downloadCacheDir.resolve(relativeSaveDir ?: data.data.contentHashCode().toString())
+
+    private fun buildSessionKey(data: EncodedTorrentInfo, saveDir: SystemPath): String {
+        return "${data.data.contentHashCode()}@${saveDir.absolutePath}"
+    }
 
     override fun listSaves(): List<SystemPath> {
         return downloadCacheDir.list().toList().map { it.inSystem }

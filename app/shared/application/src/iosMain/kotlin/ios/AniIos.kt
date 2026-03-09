@@ -270,6 +270,7 @@ fun getIosModules(
             saveDir = context.files.defaultMediaCacheBaseDir
                 .resolve(HttpMediaCacheEngine.MEDIA_CACHE_DIR).path,
             mediaResolver = get<MediaResolver>(),
+            saveDirProvider = get(),
         )
     }
     single<MediampPlayerFactory<*>> {

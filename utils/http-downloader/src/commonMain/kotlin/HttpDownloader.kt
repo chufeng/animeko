@@ -14,6 +14,7 @@ import androidx.room.Embedded
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.TypeConverters
+import io.ktor.http.Url
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -221,5 +222,23 @@ data class DownloadOptions(
     val headers: Map<String, String> = emptyMap(),
     val maxRetriesPerSegment: Int = 100,
     val baseRetryDelayMillis: Long = 1000L,
+    val relativeOutputPath: String? = null,
+    val relativeSegmentCacheDir: String? = null,
 )
 
+fun guessMediaTypeFromUrl(url: String): MediaType? {
+    val parsed = Url(url)
+    val path = parsed.encodedPath
+
+    fun guessFromValue(value: String): MediaType? {
+        return when {
+            value.endsWith(".m3u8", ignoreCase = true) -> MediaType.M3U8
+            value.endsWith(".mp4", ignoreCase = true) -> MediaType.MP4
+            value.endsWith(".mkv", ignoreCase = true) -> MediaType.MKV
+            else -> null
+        }
+    }
+
+    return guessFromValue(path)
+        ?: guessFromValue(url)
+}

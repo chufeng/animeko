@@ -61,11 +61,13 @@ import me.him188.ani.utils.coroutines.IO_
 import me.him188.ani.utils.io.SystemPath
 import me.him188.ani.utils.io.absolutePath
 import me.him188.ani.utils.io.actualSize
+import me.him188.ani.utils.io.createDirectories
 import me.him188.ani.utils.io.delete
 import me.him188.ani.utils.io.deleteRecursively
 import me.him188.ani.utils.io.exists
 import me.him188.ani.utils.io.inSystem
 import me.him188.ani.utils.io.isDirectory
+import me.him188.ani.utils.io.moveTo
 import me.him188.ani.utils.io.resolve
 import me.him188.ani.utils.logging.debug
 import me.him188.ani.utils.logging.error
@@ -134,6 +136,15 @@ class TorrentMediaCacheEngine(
         )
 
         override suspend fun getCachedMedia(): CachedMedia {
+            origin.resolveCompletedFromDataStore()?.let { filePath ->
+                logger.info { "getCachedMedia: returning completed file $filePath from persistent state" }
+                return CachedMedia(
+                    origin,
+                    mediaSourceId,
+                    download = ResourceLocation.LocalFile(filePath.toString()),
+                )
+            }
+
             // 获取 cached media 不需要让 torrent engine 一直可用
             @OptIn(EnsureTorrentEngineIsAccessible::class)
             engineAccess.withServiceRequest("TorrentMediaCache#$this-getCachedMedia:${origin.mediaId}") {
@@ -218,6 +229,7 @@ class TorrentMediaCacheEngine(
             }
 
             // 只需要在删除缓存的时候 torrent engine 可用, 不需要保证一直可用
+            val completedFile = origin.resolveCompletedFromDataStore()
             @OptIn(EnsureTorrentEngineIsAccessible::class)
             val handle =
                 engineAccess.withServiceRequest("TorrentMediaCache#$this-closeAndDeleteFiles:${origin.mediaId}") {
@@ -239,20 +251,30 @@ class TorrentMediaCacheEngine(
                 }
 
             withContext(Dispatchers.IO_) {
-                val file = handle.entry.resolveFileMaybeEmptyOrNull() ?: kotlin.run {
+                val filesToDelete = buildList {
+                    handle.entry.resolveFileMaybeEmptyOrNull()?.let(::add)
+                    completedFile?.takeIf { completed ->
+                        none { it.absolutePath == completed.absolutePath }
+                    }?.let(::add)
+                }
+
+                if (filesToDelete.isEmpty()) {
                     logger.warn { "No file resolved for torrent entry '${handle.entry.fileName}'" }
                     return@withContext
                 }
-                if (file.exists()) {
-                    logger.info { "Deleting torrent cache: $file" }
-                    try {
-                        file.delete()
-                    } catch (_: FileNotFoundException) {
-                    } catch (e: IOException) {
-                        logger.warn("Failed to delete cache file $file", e)
+
+                filesToDelete.forEach { file ->
+                    if (file.exists()) {
+                        logger.info { "Deleting torrent cache: $file" }
+                        try {
+                            file.delete()
+                        } catch (_: FileNotFoundException) {
+                        } catch (e: IOException) {
+                            logger.warn("Failed to delete cache file $file", e)
+                        }
+                    } else {
+                        logger.info { "Torrent cache does not exist, ignoring: $file" }
                     }
-                } else {
-                    logger.info { "Torrent cache does not exist, ignoring: $file" }
                 }
             }
             dao.deleteByMediaId(origin.mediaId)
@@ -341,13 +363,13 @@ class TorrentMediaCacheEngine(
                                 // 如果距离上次上传活动大于 10 分钟, 直接更新 metadata
                             }
 
-                            dao.upsert(
-                                entity.copy(
-                                    completed = true,
-                                    downloadSize = fileStats.downloadedBytes,
-                                    uploadSize = sessionStats.uploadedBytes,
-                                ),
+                            val completedEntity = entity.copy(
+                                completed = true,
+                                pathInTorrent = fileEntry.pathInTorrent,
+                                downloadSize = fileStats.downloadedBytes,
+                                uploadSize = sessionStats.uploadedBytes,
                             )
+                            dao.upsert(moveCompletedFileToReadableLocation(completedEntity, fileEntry))
 
                             finishedFlow.value = true // side effect.
                         }.run {
@@ -360,6 +382,45 @@ class TorrentMediaCacheEngine(
                         }
                     }
                 }
+            }
+        }
+
+        private suspend fun moveCompletedFileToReadableLocation(
+            entity: TorrentCacheInfoEntity,
+            fileEntry: TorrentFileEntry,
+        ): TorrentCacheInfoEntity {
+            val friendlyFileName = baseSaveDirProvider.getTorrentCompletedFileName(
+                origin,
+                metadata,
+                EpisodeMetadata(
+                    title = metadata.episodeName,
+                    ep = metadata.episodeEp,
+                    sort = metadata.episodeSort,
+                ),
+                fileEntry.fileName,
+            ) ?: return entity
+
+            return withContext(Dispatchers.IO_) {
+                val sourceFile = fileEntry.resolveFileMaybeEmptyOrNull() ?: return@withContext entity
+                if (!sourceFile.exists() || sourceFile.isDirectory()) return@withContext entity
+
+                val saveDir = resolvePersistedSaveDir(entity.relativeDir)
+                val targetParent = resolveReadableCompletedTargetParent(entity.relativeDir, saveDir)
+                targetParent.createDirectories()
+
+                val targetFile = buildUniqueTargetFile(targetParent, friendlyFileName, sourceFile.absolutePath)
+                val relativeTargetPath = buildRelativePathFromSaveDir(
+                    entity.relativeDir,
+                    toRelativePathFromBase(targetFile.absolutePath),
+                )
+                if (targetFile.absolutePath == sourceFile.absolutePath) {
+                    return@withContext entity.copy(pathInTorrent = relativeTargetPath)
+                }
+
+                sourceFile.moveTo(targetFile.path)
+                return@withContext entity.copy(
+                    pathInTorrent = relativeTargetPath,
+                )
             }
         }
 
@@ -423,7 +484,8 @@ class TorrentMediaCacheEngine(
         parentContext: CoroutineContext
     ): MediaCache? {
         if (!supports(origin)) throw UnsupportedOperationException("Media is not supported by this engine $this: ${origin.download}")
-        val data = dao.get(origin.mediaId)?.torrentData ?: return null
+        val entity = dao.get(origin.mediaId) ?: return null
+        val data = entity.torrentData
 
         val localFile = origin.resolveCompletedFromDataStore()
         if (localFile != null) {
@@ -441,6 +503,7 @@ class TorrentMediaCacheEngine(
                                 fileHandle = getFileHandle(
                                     EncodedTorrentInfo.createRaw(data),
                                     metadata,
+                                    resolvePersistedSaveDir(entity.relativeDir),
                                     coroutineContext,
                                 ),
                             ).apply {
@@ -448,6 +511,14 @@ class TorrentMediaCacheEngine(
                                 closeAndDeleteFiles()
                             }
                         }
+                    if (localFile.exists()) {
+                        try {
+                            localFile.delete()
+                        } catch (_: FileNotFoundException) {
+                        } catch (e: IOException) {
+                            logger.warn("Failed to delete renamed cache file $localFile", e)
+                        }
+                    }
                 }
             }
         }
@@ -457,7 +528,12 @@ class TorrentMediaCacheEngine(
             TorrentMediaCache(
                 origin = origin,
                 metadata = metadata,
-                fileHandle = getFileHandle(EncodedTorrentInfo.createRaw(data), metadata, parentContext),
+                fileHandle = getFileHandle(
+                    EncodedTorrentInfo.createRaw(data),
+                    metadata,
+                    resolvePersistedSaveDir(entity.relativeDir),
+                    parentContext,
+                ),
             )
         }
     }
@@ -465,11 +541,16 @@ class TorrentMediaCacheEngine(
     private suspend fun getFileHandle(
         encoded: EncodedTorrentInfo,
         metadata: MediaCacheMetadata,
+        saveDir: SystemPath?,
         parentContext: CoroutineContext,
     ): FileHandle {
         val downloader = torrentEngine.getDownloader()
         val res = kotlinx.coroutines.withTimeoutOrNull(30_000) {
-            val session = downloader.startDownload(encoded, parentContext)
+            val session = if (saveDir == null) {
+                downloader.startDownload(encoded, parentContext)
+            } else {
+                downloader.startDownload(encoded, saveDir, parentContext)
+            }
             logger.info { "$mediaSourceId: waiting for files" }
             onDownloadStarted(session)
 
@@ -521,28 +602,26 @@ class TorrentMediaCacheEngine(
         engineAccess.withServiceRequest("TorrentMediaCacheEngine#$this-createCache:${origin.mediaId}") {
             val downloader = torrentEngine.getDownloader()
             val data = downloader.fetchTorrent(origin.download.uri)
+            val customRelativeDir = baseSaveDirProvider.getTorrentRelativeSaveDir(
+                origin,
+                metadata,
+                episodeMetadata,
+                data,
+            )
+            val saveDir = downloader.getSaveDirForTorrent(data, customRelativeDir)
 
             dao.upsert(
                 TorrentCacheInfoEntity(
                     mediaId = origin.mediaId,
                     torrentData = data.data,
-                    relativeDir = downloader.getSaveDirForTorrent(data).absolutePath.let { path ->
-                        val stripped = path.substringAfter(baseSaveDirProvider.saveDir)
-                        if (path == stripped) {
-                            throw UnsupportedOperationException(
-                                "Failed to strip torrent save path of media ${origin.mediaId}, " +
-                                        "path: $path, base: ${baseSaveDirProvider.saveDir}",
-                            )
-                        }
-                        stripped
-                    },
+                    relativeDir = toRelativePathFromBase(origin.mediaId, saveDir.absolutePath),
                 ),
             )
 
             return TorrentMediaCache(
                 origin = origin,
                 metadata = metadata,
-                fileHandle = getFileHandle(data, metadata, parentContext),
+                fileHandle = getFileHandle(data, metadata, saveDir, parentContext),
             )
         }
     }
@@ -556,7 +635,7 @@ class TorrentMediaCacheEngine(
 
             val allowedAbsolute = buildSet {
                 dao.batchGet(all.map { it.origin.mediaId }).forEach {
-                    add(Path(baseSaveDirProvider.saveDir).resolve(it.relativeDir).inSystem.absolutePath)
+                    add(resolvePersistedSaveDir(it.relativeDir).absolutePath)
                     add(downloader.getSaveDirForTorrent(EncodedTorrentInfo.createRaw(it.torrentData)).absolutePath)
                 }
             }
@@ -583,11 +662,101 @@ class TorrentMediaCacheEngine(
         if (!entity.completed) return null
         val pathInTorrent = entity.pathInTorrent.takeIf { it.isNotEmpty() } ?: return null
 
-        val file = Path(baseSaveDirProvider.saveDir, entity.relativeDir).resolve(pathInTorrent).inSystem
+        val file = resolvePersistedSaveDir(entity.relativeDir).path.resolve(pathInTorrent).inSystem
         if (!file.exists() || file.isDirectory()) {
             return null
         }
 
         return file
+    }
+
+    private fun buildUniqueTargetFile(
+        parentDir: SystemPath,
+        desiredFileName: String,
+        currentAbsolutePath: String,
+    ): SystemPath {
+        val desired = parentDir.resolve(desiredFileName)
+        if (!desired.exists() || desired.absolutePath == currentAbsolutePath) {
+            return desired
+        }
+
+        val extension = desiredFileName.substringAfterLast('.', "")
+            .takeIf { it.isNotBlank() }
+        val baseName = if (extension == null) {
+            desiredFileName
+        } else {
+            desiredFileName.removeSuffix(".$extension")
+        }
+
+        var index = 1
+        while (true) {
+            val candidateName = if (extension == null) {
+                "${baseName}_$index"
+            } else {
+                "${baseName}_$index.$extension"
+            }
+            val candidate = parentDir.resolve(candidateName)
+            if (!candidate.exists() || candidate.absolutePath == currentAbsolutePath) {
+                return candidate
+            }
+            index++
+        }
+    }
+
+    private fun resolvePersistedSaveDir(relativeDir: String): SystemPath {
+        return Path(baseSaveDirProvider.saveDir)
+            .resolve(relativeDir.trimStart('/', '\\'))
+            .inSystem
+    }
+
+    private fun resolveReadableCompletedTargetParent(
+        relativeDir: String,
+        saveDir: SystemPath,
+    ): SystemPath {
+        val segments = normalizeRelativePath(relativeDir)
+        val targetSegments = when {
+            segments.firstOrNull() == "pieces" -> segments.drop(1).dropLast(1)
+            else -> segments.dropLast(1)
+        }
+        if (targetSegments.isEmpty()) {
+            return saveDir.path.parent?.inSystem ?: saveDir
+        }
+
+        var targetPath = Path(baseSaveDirProvider.saveDir)
+        targetSegments.forEach { segment ->
+            targetPath = targetPath.resolve(segment)
+        }
+        return targetPath.inSystem
+    }
+
+    private fun buildRelativePathFromSaveDir(
+        saveDirRelativePath: String,
+        targetRelativePathFromBase: String,
+    ): String {
+        val saveDirSegments = normalizeRelativePath(saveDirRelativePath)
+        val targetSegments = normalizeRelativePath(targetRelativePathFromBase)
+        return (List(saveDirSegments.size) { ".." } + targetSegments).joinToString("/")
+    }
+
+    private fun normalizeRelativePath(path: String): List<String> {
+        return path
+            .split('/', '\\')
+            .filter { it.isNotBlank() }
+    }
+
+    private fun toRelativePathFromBase(mediaId: String, absolutePath: String): String {
+        val normalizedBase = baseSaveDirProvider.saveDir.trimEnd('/', '\\')
+        val normalizedTarget = absolutePath.trimEnd('/', '\\')
+
+        if (!normalizedTarget.startsWith(normalizedBase)) {
+            throw UnsupportedOperationException(
+                "Failed to strip torrent save path of media $mediaId, " +
+                        "path: $absolutePath, base: ${baseSaveDirProvider.saveDir}",
+            )
+        }
+
+        return normalizedTarget
+            .removePrefix(normalizedBase)
+            .trimStart('/', '\\')
     }
 }

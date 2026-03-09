@@ -154,6 +154,7 @@ fun getAndroidModules(
             downloader = get<HttpDownloader>(),
             saveDir = saveDir,
             mediaResolver = get<MediaResolver>(),
+            saveDirProvider = get(),
         )
     }
 

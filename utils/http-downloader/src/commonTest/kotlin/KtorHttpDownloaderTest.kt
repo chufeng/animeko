@@ -576,6 +576,29 @@ class KtorHttpDownloaderTest {
         }
     }
 
+    @Test
+    fun `download should honor custom relative output path and segment cache dir`() = testScope.runTest {
+        val outputPath = "药屋少女的呢喃/药屋少女的呢喃_03_北宇治字幕组.ts"
+        val segmentPath = "药屋少女的呢喃/.ani-segments/药屋少女的呢喃_03_北宇治字幕组__hash"
+
+        val downloadId = downloader.download(
+            url = "https://example.com/master.m3u8",
+            options = DownloadOptions(
+                relativeOutputPath = outputPath,
+                relativeSegmentCacheDir = segmentPath,
+            ),
+        )
+        downloader.joinDownload(downloadId)
+
+        val state = downloader.getState(downloadId)
+        assertNotNull(state)
+        assertEquals(DownloadStatus.COMPLETED, state.status)
+        assertEquals(outputPath, state.relativeOutputPath)
+        assertEquals(segmentPath, state.relativeSegmentCacheDir)
+        assertTrue(fileSystem.exists(Path("$tempDir/$outputPath")))
+        assertFalse(fileSystem.exists(Path("$tempDir/$segmentPath")))
+    }
+
     private fun checkByteMatchSampleMp4(source: Source, expectedSize: Long = MP4_FILE_SIZE) {
         assertTrue(!source.exhausted(), "Source should not be exhausted at the beginning.")
         var position = 0

@@ -25,6 +25,7 @@ import me.him188.ani.app.domain.media.cache.engine.AlwaysUseTorrentEngineAccess
 import me.him188.ani.app.domain.media.cache.engine.HttpMediaCacheEngine
 import me.him188.ani.app.domain.media.cache.engine.TorrentEngineAccess
 import me.him188.ani.app.domain.media.cache.storage.MediaSaveDirProvider
+import me.him188.ani.app.domain.media.cache.storage.ReadableMediaCacheNaming
 import me.him188.ani.app.domain.media.fetch.MediaSourceManager
 import me.him188.ani.app.domain.media.resolver.DesktopWebMediaResolver
 import me.him188.ani.app.domain.media.resolver.HttpStreamingMediaResolver
@@ -86,6 +87,32 @@ fun getDesktopModules(getContext: () -> DesktopContext, scope: CoroutineScope) =
 
         object : MediaSaveDirProvider {
             override val saveDir: String = baseSaveDir
+
+            override fun getHttpCacheSavePaths(
+                origin: me.him188.ani.datasources.api.Media,
+                metadata: me.him188.ani.datasources.api.MediaCacheMetadata,
+                episodeMetadata: me.him188.ani.app.domain.media.resolver.EpisodeMetadata,
+                mediaType: me.him188.ani.utils.httpdownloader.MediaType,
+            ) = ReadableMediaCacheNaming.buildHttpSavePaths(origin, metadata, episodeMetadata, mediaType)
+
+            override fun getTorrentRelativeSaveDir(
+                origin: me.him188.ani.datasources.api.Media,
+                metadata: me.him188.ani.datasources.api.MediaCacheMetadata,
+                episodeMetadata: me.him188.ani.app.domain.media.resolver.EpisodeMetadata,
+                encodedTorrentInfo: me.him188.ani.app.torrent.api.files.EncodedTorrentInfo,
+            ) = ReadableMediaCacheNaming.buildTorrentRelativeSaveDir(origin, metadata, episodeMetadata)
+
+            override fun getTorrentCompletedFileName(
+                origin: me.him188.ani.datasources.api.Media,
+                metadata: me.him188.ani.datasources.api.MediaCacheMetadata,
+                episodeMetadata: me.him188.ani.app.domain.media.resolver.EpisodeMetadata,
+                originalFileName: String,
+            ) = ReadableMediaCacheNaming.buildReadableCompletedFileName(
+                origin,
+                metadata,
+                episodeMetadata,
+                originalFileName,
+            )
         }
     }
 
@@ -112,6 +139,7 @@ fun getDesktopModules(getContext: () -> DesktopContext, scope: CoroutineScope) =
             downloader = get<HttpDownloader>(),
             saveDir = saveDir.toKtPath(),
             mediaResolver = get<MediaResolver>(),
+            saveDirProvider = get(),
         )
     }
 

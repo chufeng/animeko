@@ -42,6 +42,8 @@ import me.him188.ani.datasources.api.source.matches
 import me.him188.ani.datasources.api.topic.FileSize
 import me.him188.ani.datasources.api.topic.FileSize.Companion.bytes
 import me.him188.ani.datasources.api.topic.flowOfFileSizeZero
+import me.him188.ani.app.torrent.api.files.EncodedTorrentInfo
+import me.him188.ani.utils.httpdownloader.MediaType
 
 /**
  * 表示一个媒体缓存的存储空间, 例如一个本地目录.
@@ -164,6 +166,27 @@ suspend inline fun MediaCacheStorage.contains(cache: MediaCache): Boolean =
  */
 interface MediaSaveDirProvider {
     val saveDir: String
+
+    fun getHttpCacheSavePaths(
+        origin: Media,
+        metadata: MediaCacheMetadata,
+        episodeMetadata: EpisodeMetadata,
+        mediaType: MediaType,
+    ): HttpCacheSavePaths? = null
+
+    fun getTorrentRelativeSaveDir(
+        origin: Media,
+        metadata: MediaCacheMetadata,
+        episodeMetadata: EpisodeMetadata,
+        encodedTorrentInfo: EncodedTorrentInfo,
+    ): String? = null
+
+    fun getTorrentCompletedFileName(
+        origin: Media,
+        metadata: MediaCacheMetadata,
+        episodeMetadata: EpisodeMetadata,
+        originalFileName: String,
+    ): String? = null
 }
 
 /**
@@ -238,4 +261,3 @@ class TestMediaCacheStorage : MediaCacheStorage {
     override fun close() {
     }
 }
-

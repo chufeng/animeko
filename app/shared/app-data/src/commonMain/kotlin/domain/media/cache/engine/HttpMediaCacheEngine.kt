@@ -24,6 +24,7 @@ import kotlinx.io.files.SystemFileSystem
 import me.him188.ani.app.data.persistent.database.dao.HttpCacheDownloadStateDao
 import me.him188.ani.app.domain.media.cache.MediaCache
 import me.him188.ani.app.domain.media.cache.MediaCacheState
+import me.him188.ani.app.domain.media.cache.storage.MediaSaveDirProvider
 import me.him188.ani.app.domain.media.resolver.EpisodeMetadata
 import me.him188.ani.app.domain.media.resolver.MediaResolver
 import me.him188.ani.app.tools.Progress
@@ -43,6 +44,7 @@ import me.him188.ani.utils.httpdownloader.DownloadOptions
 import me.him188.ani.utils.httpdownloader.DownloadStatus
 import me.him188.ani.utils.httpdownloader.HttpDownloader
 import me.him188.ani.utils.httpdownloader.MediaType
+import me.him188.ani.utils.httpdownloader.guessMediaTypeFromUrl
 import me.him188.ani.utils.io.absolutePath
 import me.him188.ani.utils.io.actualSize
 import me.him188.ani.utils.io.deleteRecursively
@@ -61,6 +63,7 @@ class HttpMediaCacheEngine(
     private val mediaResolver: MediaResolver,
     private val mediaSourceId: String,
     private val dao: HttpCacheDownloadStateDao,
+    private val saveDirProvider: MediaSaveDirProvider? = null,
 ) : MediaCacheEngine {
     override val engineKey: MediaCacheEngineKey = MediaCacheEngineKey.WebM3u
 
@@ -156,10 +159,21 @@ class HttpMediaCacheEngine(
             is UriMediaData -> {
                 // TODO: 用 [Media.mediaId] 当作 DownloadId 好吗?
                 val downloadId = DownloadId(origin.mediaId)
+                val mediaType = guessMediaTypeFromUrl(mediaData.uri) ?: MediaType.MP4
+                val savePaths = saveDirProvider?.getHttpCacheSavePaths(
+                    origin,
+                    metadata,
+                    episodeMetadata,
+                    mediaType,
+                )
                 val state = downloader.downloadWithId(
                     downloadId = downloadId,
                     mediaData.uri,
-                    options = DownloadOptions(headers = mediaData.headers),
+                    options = DownloadOptions(
+                        headers = mediaData.headers,
+                        relativeOutputPath = savePaths?.relativeOutputPath,
+                        relativeSegmentCacheDir = savePaths?.relativeSegmentCacheDir,
+                    ),
                 ) ?: throw UnsupportedOperationException("Failed to create download job of $downloadId, state is null.")
 
                 return HttpMediaCache(
@@ -174,28 +188,30 @@ class HttpMediaCacheEngine(
     override suspend fun deleteUnusedCaches(all: List<MediaCache>) {
         if (!(SystemFileSystem.exists(saveDir))) return
 
-
-        val allowedAbsolute = buildSet {
+        val allowedTopLevelNames = buildSet {
             for (mediaCache in all.filterIsInstance<HttpMediaCache>()) {
                 downloader.getState(mediaCache.downloadId)?.let { state ->
-                    add(Path(saveDir, state.relativeOutputPath).inSystem.absolutePath)
-                    add(Path(saveDir, state.relativeSegmentCacheDir).inSystem.absolutePath)
+                    extractTopLevelName(state.relativeOutputPath)?.let(::add)
+                    extractTopLevelName(state.relativeSegmentCacheDir)?.let(::add)
                 }
             }
         }
         withContext(Dispatchers.IO_) {
             val saves = SystemFileSystem.list(saveDir)
             for (save in saves) {
-                val myPath = save.inSystem.absolutePath
-                if (allowedAbsolute.none {
-                        myPath.startsWith(it)
-                    }) {
+                if (save.name !in allowedTopLevelNames) {
                     logger.warn { "本地 WEB 缓存文件未找到匹配的 MediaCache, 已释放 ${save.inSystem.actualSize().bytes}: ${save.inSystem.absolutePath}" }
                     SystemFileSystem.deleteRecursively(save)
                 }
             }
         }
 
+    }
+
+    private fun extractTopLevelName(relativePath: String): String? {
+        return relativePath
+            .split('/', '\\')
+            .firstOrNull { it.isNotBlank() }
     }
 
     inner class HttpMediaCache(
