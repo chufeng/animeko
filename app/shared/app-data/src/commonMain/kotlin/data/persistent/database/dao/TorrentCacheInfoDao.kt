@@ -25,8 +25,11 @@ import me.him188.ani.utils.platform.annotations.TestOnly
 
 /**
  * 存储 BitTorrent 引擎缓存的媒体的信息.
- * 
- * 种子文件的最终目录应该是 [MediaSaveDirProvider.saveDir] + [relativeDir] + [pathInTorrent]
+ *
+ * 种子文件的下载目录: [MediaSaveDirProvider.saveDir] + [relativeDir]
+ *
+ * 完成后可读文件路径 (如果有): [MediaSaveDirProvider.saveDir] + [completedPathFromBase]
+ * 若 [completedPathFromBase] 为空, 则回退到 [MediaSaveDirProvider.saveDir] + [relativeDir] + [pathInTorrent]
  */
 @Entity(
     tableName = "torrent_cache",
@@ -57,6 +60,13 @@ data class TorrentCacheInfoEntity(
      */
     val pathInTorrent: String = "",
     /**
+     * 完成后移动到的可读文件路径, 相对于 [MediaSaveDirProvider.saveDir].
+     * 例如: "药屋少女的呢喃/药屋少女的呢喃_03_北宇治字幕组.mkv"
+     *
+     * 为空表示未移动, 此时回退到 [relativeDir] + [pathInTorrent].
+     */
+    val completedPathFromBase: String = "",
+    /**
      * 该种子已下载的大小, 字节
      */
     val downloadSize: Long = 0,
@@ -78,6 +88,7 @@ data class TorrentCacheInfoEntity(
         if (!torrentData.contentEquals(other.torrentData)) return false
         if (relativeDir != other.relativeDir) return false
         if (pathInTorrent != other.pathInTorrent) return false
+        if (completedPathFromBase != other.completedPathFromBase) return false
 
         return true
     }
@@ -90,6 +101,7 @@ data class TorrentCacheInfoEntity(
         result = 31 * result + torrentData.contentHashCode()
         result = 31 * result + relativeDir.hashCode()
         result = 31 * result + pathInTorrent.hashCode()
+        result = 31 * result + completedPathFromBase.hashCode()
         return result
     }
 }

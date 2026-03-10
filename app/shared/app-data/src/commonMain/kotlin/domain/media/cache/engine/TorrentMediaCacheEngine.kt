@@ -404,22 +404,28 @@ class TorrentMediaCacheEngine(
                 val sourceFile = fileEntry.resolveFileMaybeEmptyOrNull() ?: return@withContext entity
                 if (!sourceFile.exists() || sourceFile.isDirectory()) return@withContext entity
 
-                val saveDir = resolvePersistedSaveDir(entity.relativeDir)
-                val targetParent = resolveReadableCompletedTargetParent(entity.relativeDir, saveDir)
+                // Target parent is the subject folder directly under baseSaveDir
+                val subjectFolder = entity.relativeDir
+                    .split('/', '\\')
+                    .filter { it.isNotBlank() }
+                    .let { segments ->
+                        // Skip "pieces" prefix if present to get the subject folder name
+                        if (segments.firstOrNull() == "pieces") segments.getOrNull(1) else segments.firstOrNull()
+                    } ?: return@withContext entity
+
+                val targetParent = Path(baseSaveDirProvider.saveDir).resolve(subjectFolder).inSystem
                 targetParent.createDirectories()
 
                 val targetFile = buildUniqueTargetFile(targetParent, friendlyFileName, sourceFile.absolutePath)
-                val relativeTargetPath = buildRelativePathFromSaveDir(
-                    entity.relativeDir,
-                    toRelativePathFromBase(targetFile.absolutePath),
-                )
+                // Store path relative to baseSaveDir (e.g. "药屋少女的呢喃/药屋少女的呢喃_03_北宇治字幕组.mkv")
+                val completedPathFromBase = toRelativePathFromBase(origin.mediaId, targetFile.absolutePath)
                 if (targetFile.absolutePath == sourceFile.absolutePath) {
-                    return@withContext entity.copy(pathInTorrent = relativeTargetPath)
+                    return@withContext entity.copy(completedPathFromBase = completedPathFromBase)
                 }
 
                 sourceFile.moveTo(targetFile.path)
                 return@withContext entity.copy(
-                    pathInTorrent = relativeTargetPath,
+                    completedPathFromBase = completedPathFromBase,
                 )
             }
         }
@@ -658,10 +664,19 @@ class TorrentMediaCacheEngine(
 
     private suspend fun Media.resolveCompletedFromDataStore(): SystemPath? {
         val entity = dao.get(mediaId) ?: return null
-
         if (!entity.completed) return null
-        val pathInTorrent = entity.pathInTorrent.takeIf { it.isNotEmpty() } ?: return null
 
+        // Prefer completedPathFromBase (relative to baseSaveDir, no ".." traversal)
+        val completedPath = entity.completedPathFromBase.takeIf { it.isNotEmpty() }
+        if (completedPath != null) {
+            val file = Path(baseSaveDirProvider.saveDir).resolve(completedPath).inSystem
+            if (file.exists() && !file.isDirectory()) {
+                return file
+            }
+        }
+
+        // Fallback to legacy pathInTorrent (relative to relativeDir)
+        val pathInTorrent = entity.pathInTorrent.takeIf { it.isNotEmpty() } ?: return null
         val file = resolvePersistedSaveDir(entity.relativeDir).path.resolve(pathInTorrent).inSystem
         if (!file.exists() || file.isDirectory()) {
             return null
@@ -707,41 +722,6 @@ class TorrentMediaCacheEngine(
         return Path(baseSaveDirProvider.saveDir)
             .resolve(relativeDir.trimStart('/', '\\'))
             .inSystem
-    }
-
-    private fun resolveReadableCompletedTargetParent(
-        relativeDir: String,
-        saveDir: SystemPath,
-    ): SystemPath {
-        val segments = normalizeRelativePath(relativeDir)
-        val targetSegments = when {
-            segments.firstOrNull() == "pieces" -> segments.drop(1).dropLast(1)
-            else -> segments.dropLast(1)
-        }
-        if (targetSegments.isEmpty()) {
-            return saveDir.path.parent?.inSystem ?: saveDir
-        }
-
-        var targetPath = Path(baseSaveDirProvider.saveDir)
-        targetSegments.forEach { segment ->
-            targetPath = targetPath.resolve(segment)
-        }
-        return targetPath.inSystem
-    }
-
-    private fun buildRelativePathFromSaveDir(
-        saveDirRelativePath: String,
-        targetRelativePathFromBase: String,
-    ): String {
-        val saveDirSegments = normalizeRelativePath(saveDirRelativePath)
-        val targetSegments = normalizeRelativePath(targetRelativePathFromBase)
-        return (List(saveDirSegments.size) { ".." } + targetSegments).joinToString("/")
-    }
-
-    private fun normalizeRelativePath(path: String): List<String> {
-        return path
-            .split('/', '\\')
-            .filter { it.isNotBlank() }
     }
 
     private fun toRelativePathFromBase(mediaId: String, absolutePath: String): String {

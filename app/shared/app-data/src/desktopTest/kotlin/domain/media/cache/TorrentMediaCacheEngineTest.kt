@@ -53,7 +53,7 @@ class TorrentMediaCacheEngineTest : AbstractTorrentMediaCacheEngineTest() {
     }
 
     @Test
-    fun `restore uses moved readable file outside pieces directory`() = runTest {
+    fun `restore uses completedPathFromBase relative to baseSaveDir`() = runTest {
         val metadata = MediaCacheMetadata(
             subjectId = "subject-1",
             episodeId = "episode-2",
@@ -73,7 +73,41 @@ class TorrentMediaCacheEngineTest : AbstractTorrentMediaCacheEngineTest() {
                 torrentData = byteArrayOf(1, 2, 3),
                 relativeDir = "pieces/药屋少女的呢喃/药屋少女的呢喃_03_hash",
                 completed = true,
-                pathInTorrent = "../../../药屋少女的呢喃/药屋少女的呢喃_03_北宇治字幕组.mkv",
+                pathInTorrent = "video.mkv",
+                completedPathFromBase = "药屋少女的呢喃/药屋少女的呢喃_03_北宇治字幕组.mkv",
+            ),
+        )
+
+        val engine = createEngine(saveDirProvider = createReadableSaveDirProvider())
+        val cache = engine.restore(testMedia, metadata, coroutineContext)
+
+        val localCache = assertIs<LocalFileMediaCache>(cache)
+        assertEquals(targetFile.absolutePath, localCache.file.absolutePath)
+    }
+
+    @Test
+    fun `restore falls back to pathInTorrent when completedPathFromBase is empty`() = runTest {
+        val metadata = MediaCacheMetadata(
+            subjectId = "subject-1",
+            episodeId = "episode-2",
+            subjectNameCN = "药屋少女的呢喃",
+            subjectNames = listOf("The Apothecary Diaries"),
+            episodeSort = EpisodeSort("03"),
+            episodeEp = EpisodeSort("03"),
+            episodeName = "第3话",
+        )
+        val targetFile = tempFile("pieces", "药屋少女的呢喃", "药屋少女的呢喃_03_hash", "video.mkv")
+        targetFile.parentFile.mkdirs()
+        targetFile.writeText("test-cache")
+
+        torrentInfoDatabase.upsert(
+            TorrentCacheInfoEntity(
+                mediaId = testMedia.mediaId,
+                torrentData = byteArrayOf(1, 2, 3),
+                relativeDir = "pieces/药屋少女的呢喃/药屋少女的呢喃_03_hash",
+                completed = true,
+                pathInTorrent = "video.mkv",
+                completedPathFromBase = "",
             ),
         )
 

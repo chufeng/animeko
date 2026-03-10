@@ -81,7 +81,7 @@ import me.him188.ani.utils.httpdownloader.DownloadState
 
         PreferredWebMediaSource::class,
     ],
-    version = 19,
+    version = 20,
     autoMigrations = [
         AutoMigration(from = 1, to = 2, spec = Migrations.Migration_1_2::class),
         AutoMigration(from = 2, to = 3, spec = Migrations.Migration_2_3::class),
@@ -101,6 +101,7 @@ import me.him188.ani.utils.httpdownloader.DownloadState
         AutoMigration(from = 16, to = 17, spec = Migrations.Migration_16_17::class),
         AutoMigration(from = 17, to = 18, spec = Migrations.Migration_17_18::class),
         AutoMigration(from = 18, to = 19, spec = Migrations.Migration_18_19::class),
+        AutoMigration(from = 19, to = 20, spec = Migrations.Migration_19_20::class),
     ],
     exportSchema = true,
 )
@@ -337,6 +338,14 @@ internal object Migrations {
      * @since 5.3.0
      */
     class Migration_18_19 : AutoMigrationSpec {
+        override fun onPostMigrate(connection: SQLiteConnection) {
+        }
+    }
+
+    /**
+     * Added [TorrentCacheInfoEntity.completedPathFromBase].
+     */
+    class Migration_19_20 : AutoMigrationSpec {
         override fun onPostMigrate(connection: SQLiteConnection) {
         }
     }
